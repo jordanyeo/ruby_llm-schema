@@ -6,6 +6,8 @@ require_relative "schema/helpers"
 require_relative "schema/validator"
 require_relative "schema/dsl"
 require_relative "schema/json_output"
+require_relative "schema/compressor"
+require_relative "schema/expander"
 require "json"
 
 module RubyLLM

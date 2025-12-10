@@ -404,6 +404,123 @@ schema.to_json_schema
 puts schema.to_json  # Pretty JSON string
 ```
 
+## Schema Compression
+
+When sending schemas to LLMs, long field names consume tokens. The compression feature replaces field names with short codes based on the first letter of each field name, using two letters only when there are conflicts. This keeps compressed names intuitive while significantly reducing token usage.
+
+### Basic Usage
+
+```ruby
+class UserSchema < RubyLLM::Schema
+  string :first_name, description: "User's first name"
+  string :last_name, description: "User's last name"
+  integer :age
+  object :address do
+    string :street
+    string :city
+    string :zip_code
+  end
+end
+
+schema = UserSchema.new("User")
+result = schema.to_json_schema(compress: true)
+```
+
+The compressed schema transforms field names using first letters:
+- `first_name` → `f`
+- `last_name` → `l`
+- `age` → `a`
+- `address` → `ad` (conflict with `age`)
+- `address.street` → `s`
+- `address.city` → `c`
+- `address.zip_code` → `z`
+
+Original field names are preserved in descriptions:
+```json
+{
+  "f": { "type": "string", "description": "first_name: User's first name" },
+  "l": { "type": "string", "description": "last_name: User's last name" },
+  "a": { "type": "integer", "description": "age" }
+}
+```
+
+### Expanding Responses
+
+When an LLM returns a response with compressed field names, use the `Expander` to restore original names:
+
+```ruby
+# Get compressed schema with field_map
+result = schema.to_json_schema(compress: true)
+compressed_schema = result[:schema]
+field_map = result[:field_map]
+
+# ... send compressed_schema to LLM and get response ...
+
+# LLM response uses compressed field names
+llm_response = {
+  "f" => "John",
+  "l" => "Doe",
+  "a" => 30,
+  "ad" => {
+    "s" => "123 Main St",
+    "c" => "Springfield",
+    "z" => "12345"
+  }
+}
+
+# Expand back to original field names
+expanded = RubyLLM::Schema::Expander.expand(llm_response, field_map)
+# => {
+#   first_name: "John",
+#   last_name: "Doe",
+#   age: 30,
+#   address: {
+#     street: "123 Main St",
+#     city: "Springfield",
+#     zip_code: "12345"
+#   }
+# }
+```
+
+### Integration with ruby_llm
+
+When using the `ruby_llm` gem, you can integrate compression like this:
+
+```ruby
+class UserSchema < RubyLLM::Schema
+  string :first_name, description: "User's first name"
+  string :last_name
+  integer :age
+end
+
+# Get compressed schema
+schema = UserSchema.new("User")
+compressed = schema.to_json_schema(compress: true)
+
+# Use with ruby_llm
+response = RubyLLM.chat(
+  model: "gpt-4",
+  messages: [{ role: "user", content: "Extract user info from: John Doe, 30 years old" }],
+  response_format: compressed  # Pass the compressed schema
+)
+
+# Parse and expand the response
+parsed = JSON.parse(response.content, symbolize_names: false)
+expanded = RubyLLM::Schema::Expander.expand(parsed, compressed[:field_map])
+
+puts expanded[:first_name]  # => "John"
+puts expanded[:last_name]   # => "Doe"
+puts expanded[:age]         # => 30
+```
+
+### Options
+
+```ruby
+# Get string keys instead of symbols
+expanded = RubyLLM::Schema::Expander.expand(response, field_map, symbolize: false)
+# => { "first_name" => "John", "last_name" => "Doe", "age" => 30 }
+```
+
 ## License
 
 The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
