@@ -276,6 +276,118 @@ RSpec.describe RubyLLM::Schema::Compressor do
       end
     end
 
+    context "with anyOf containing array variant" do
+      let(:schema_class) do
+        Class.new(RubyLLM::Schema) do
+          any_of :custom_fields, description: "Optional custom fields" do
+            array do
+              object do
+                string :field_name, description: "Name of the custom field"
+                string :field_value, description: "Value of the custom field"
+              end
+            end
+            null
+          end
+        end
+      end
+
+      it "compresses array items inside anyOf" do
+        result = described_class.compress(schema_class.properties)
+
+        # custom_fields => c
+        any_of = result[:properties]["c"][:anyOf]
+
+        # First variant is an array with compressed item properties
+        array_variant = any_of[0]
+        expect(array_variant[:type]).to eq("array")
+        expect(array_variant[:items][:properties].keys).to contain_exactly("f", "fi")
+      end
+
+      it "includes array items in variants field_map" do
+        result = described_class.compress(schema_class.properties)
+
+        expect(result[:field_map]["c"][:_original]).to eq(:custom_fields)
+        expect(result[:field_map]["c"][:_variants]).to be_an(Array)
+
+        # First variant should have _items mapping for the array
+        array_variant_map = result[:field_map]["c"][:_variants][0]
+        expect(array_variant_map[:_items]).to eq({
+          "f" => :field_name,
+          "fi" => :field_value
+        })
+
+        # Second variant (null) should be empty
+        expect(result[:field_map]["c"][:_variants][1]).to eq({})
+      end
+    end
+
+    context "with deeply nested anyOf array structure" do
+      let(:schema_class) do
+        Class.new(RubyLLM::Schema) do
+          array :samples, description: "List of samples" do
+            object do
+              string :sample_name
+              any_of :sample_values, description: "Analytical results" do
+                array do
+                  object do
+                    string :chemical_name, description: "Name of chemical"
+                    string :value, description: "Measured value"
+                    string :unit, description: "Unit of measurement"
+                  end
+                end
+                null
+              end
+            end
+          end
+        end
+      end
+
+      it "compresses nested arrays within anyOf within arrays" do
+        result = described_class.compress(schema_class.properties)
+
+        # samples => s
+        samples = result[:properties]["s"]
+        expect(samples[:type]).to eq("array")
+
+        # sample item properties: sample_name => sa, sample_values => sv (or similar)
+        item_props = samples[:items][:properties]
+        expect(item_props.keys.length).to eq(2)
+
+        # Find the sample_values key (it will be some short name)
+        sample_values_key = item_props.keys.find { |k| item_props[k][:anyOf] }
+        sample_values = item_props[sample_values_key]
+
+        # anyOf should have array variant with compressed properties
+        array_variant = sample_values[:anyOf].find { |v| v[:type] == "array" }
+        expect(array_variant[:items][:properties].keys).to contain_exactly("c", "v", "u")
+      end
+
+      it "builds deeply nested field_map for expansion" do
+        result = described_class.compress(schema_class.properties)
+
+        # samples field_map
+        samples_map = result[:field_map]["s"]
+        expect(samples_map[:_original]).to eq(:samples)
+
+        # samples items field_map
+        items_map = samples_map[:_items]
+        expect(items_map).to be_a(Hash)
+
+        # Find sample_values in items_map
+        sample_values_map = items_map.values.find { |v| v.is_a?(Hash) && v[:_variants] }
+        expect(sample_values_map).not_to be_nil
+        expect(sample_values_map[:_original]).to eq(:sample_values)
+
+        # First variant should have _items for the nested array
+        array_variant_map = sample_values_map[:_variants][0]
+        expect(array_variant_map[:_items]).to include(
+          "c" => :chemical_name,
+          "v" => :value,
+          "u" => :unit
+        )
+      end
+    end
+
     context "with deeply nested structures" do
       let(:schema_class) do
         Class.new(RubyLLM::Schema) do

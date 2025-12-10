@@ -309,5 +309,127 @@ RSpec.describe RubyLLM::Schema::Expander do
         })
       end
     end
+
+    context "with anyOf containing array variant" do
+      let(:field_map) do
+        {
+          "c" => {
+            _original: :custom_fields,
+            _variants: [
+              {_items: {"f" => :field_name, "fi" => :field_value}},
+              {}  # null variant
+            ]
+          }
+        }
+      end
+
+      it "expands array values using the array variant's _items mapping" do
+        response = {
+          "c" => [
+            {"f" => "Color", "fi" => "Blue"},
+            {"f" => "Size", "fi" => "Large"}
+          ]
+        }
+
+        result = described_class.expand(response, field_map)
+
+        expect(result).to eq({
+          custom_fields: [
+            {field_name: "Color", field_value: "Blue"},
+            {field_name: "Size", field_value: "Large"}
+          ]
+        })
+      end
+
+      it "handles null values" do
+        response = {"c" => nil}
+
+        result = described_class.expand(response, field_map)
+
+        expect(result).to eq({custom_fields: nil})
+      end
+    end
+
+    context "with deeply nested anyOf array structure" do
+      let(:field_map) do
+        {
+          "s" => {
+            _original: :samples,
+            _items: {
+              "sa" => :sample_name,
+              "sv" => {
+                _original: :sample_values,
+                _variants: [
+                  {_items: {"c" => :chemical_name, "v" => :value, "u" => :unit}},
+                  {}  # null variant
+                ]
+              }
+            }
+          }
+        }
+      end
+
+      it "expands deeply nested arrays within anyOf within arrays" do
+        response = {
+          "s" => [
+            {
+              "sa" => "Sample-001",
+              "sv" => [
+                {"c" => "Benzene", "v" => "< 5", "u" => "ug/L"},
+                {"c" => "Toluene", "v" => "12.5", "u" => "ug/L"}
+              ]
+            },
+            {
+              "sa" => "Sample-002",
+              "sv" => [
+                {"c" => "Lead", "v" => "0.8", "u" => "mg/kg"}
+              ]
+            }
+          ]
+        }
+
+        result = described_class.expand(response, field_map)
+
+        expect(result).to eq({
+          samples: [
+            {
+              sample_name: "Sample-001",
+              sample_values: [
+                {chemical_name: "Benzene", value: "< 5", unit: "ug/L"},
+                {chemical_name: "Toluene", value: "12.5", unit: "ug/L"}
+              ]
+            },
+            {
+              sample_name: "Sample-002",
+              sample_values: [
+                {chemical_name: "Lead", value: "0.8", unit: "mg/kg"}
+              ]
+            }
+          ]
+        })
+      end
+
+      it "handles null values in nested anyOf" do
+        response = {
+          "s" => [
+            {
+              "sa" => "Sample-001",
+              "sv" => nil
+            }
+          ]
+        }
+
+        result = described_class.expand(response, field_map)
+
+        expect(result).to eq({
+          samples: [
+            {
+              sample_name: "Sample-001",
+              sample_values: nil
+            }
+          ]
+        })
+      end
+    end
   end
 end

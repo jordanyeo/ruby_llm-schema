@@ -211,6 +211,13 @@ module RubyLLM
           items = schema[:items]
           return {schema: compressed, field_map: nil} unless items
 
+          result = compress_array_items(items, defs_field_map)
+          compressed[:items] = result[:schema] if result[:schema]
+          {schema: compressed, field_map: result[:field_map]}
+        end
+
+        # Compresses array items - handles object, anyOf, oneOf, and ref item types
+        def compress_array_items(items, defs_field_map)
           case schema_type(items)
           when :object
             if items[:properties]
@@ -218,16 +225,70 @@ module RubyLLM
               compressed_items = items.dup
               compressed_items[:properties] = result[:properties]
               compressed_items[:required] = result[:required] unless result[:required].empty?
-              compressed[:items] = compressed_items
-              {schema: compressed, field_map: {_items: result[:field_map]}}
+              {schema: compressed_items, field_map: {_items: result[:field_map]}}
             else
-              {schema: compressed, field_map: nil}
+              {schema: items, field_map: nil}
             end
+          when :any_of
+            # Handle anyOf inside array items
+            result = compress_any_of_items(items, defs_field_map)
+            {schema: result[:schema], field_map: {_items: result[:field_map]}}
+          when :one_of
+            # Handle oneOf inside array items
+            result = compress_one_of_items(items, defs_field_map)
+            {schema: result[:schema], field_map: {_items: result[:field_map]}}
           when :ref
             ref_name = items["$ref"]&.split("/")&.last&.to_sym
-            {schema: compressed, field_map: {_ref: ref_name}}
+            {schema: items, field_map: {_ref: ref_name}}
           else
-            {schema: compressed, field_map: nil}
+            {schema: items, field_map: nil}
+          end
+        end
+
+        # Compress anyOf schema that appears as array items (no name/description handling)
+        def compress_any_of_items(schema, defs_field_map)
+          compressed = schema.dup
+          variants_field_map = []
+
+          compressed_any_of = schema[:anyOf].map do |variant|
+            compress_variant(variant, variants_field_map, defs_field_map)
+          end
+
+          compressed[:anyOf] = compressed_any_of
+          {schema: compressed, field_map: {_variants: variants_field_map}}
+        end
+
+        # Compress oneOf schema that appears as array items (no name/description handling)
+        def compress_one_of_items(schema, defs_field_map)
+          compressed = schema.dup
+          variants_field_map = []
+
+          compressed_one_of = schema[:oneOf].map do |variant|
+            compress_variant(variant, variants_field_map, defs_field_map)
+          end
+
+          compressed[:oneOf] = compressed_one_of
+          {schema: compressed, field_map: {_variants: variants_field_map}}
+        end
+
+        # Compress a single variant (object, array, or primitive)
+        def compress_variant(variant, variants_field_map, defs_field_map)
+          if variant[:type] == "object" && variant[:properties]
+            result = compress_properties(variant[:properties], variant[:required] || [], defs_field_map)
+            variants_field_map << result[:field_map]
+            compressed_variant = variant.dup
+            compressed_variant[:properties] = result[:properties]
+            compressed_variant[:required] = result[:required] unless result[:required].empty?
+            compressed_variant
+          elsif variant[:type] == "array" && variant[:items]
+            result = compress_array_items(variant[:items], defs_field_map)
+            variants_field_map << result[:field_map]
+            compressed_variant = variant.dup
+            compressed_variant[:items] = result[:schema] if result[:schema]
+            compressed_variant
+          else
+            variants_field_map << {}
+            variant
           end
         end
 
@@ -237,17 +298,7 @@ module RubyLLM
 
           variants_field_map = []
           compressed_any_of = schema[:anyOf].map do |variant|
-            if variant[:type] == "object" && variant[:properties]
-              result = compress_properties(variant[:properties], variant[:required] || [], defs_field_map)
-              variants_field_map << result[:field_map]
-              compressed_variant = variant.dup
-              compressed_variant[:properties] = result[:properties]
-              compressed_variant[:required] = result[:required] unless result[:required].empty?
-              compressed_variant
-            else
-              variants_field_map << {}
-              variant
-            end
+            compress_variant(variant, variants_field_map, defs_field_map)
           end
 
           compressed[:anyOf] = compressed_any_of
@@ -260,17 +311,7 @@ module RubyLLM
 
           variants_field_map = []
           compressed_one_of = schema[:oneOf].map do |variant|
-            if variant[:type] == "object" && variant[:properties]
-              result = compress_properties(variant[:properties], variant[:required] || [], defs_field_map)
-              variants_field_map << result[:field_map]
-              compressed_variant = variant.dup
-              compressed_variant[:properties] = result[:properties]
-              compressed_variant[:required] = result[:required] unless result[:required].empty?
-              compressed_variant
-            else
-              variants_field_map << {}
-              variant
-            end
+            compress_variant(variant, variants_field_map, defs_field_map)
           end
 
           compressed[:oneOf] = compressed_one_of

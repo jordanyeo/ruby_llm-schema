@@ -103,18 +103,56 @@ module RubyLLM
         end
 
         def expand_with_variants(value, variants, defs, symbolize:)
+          # Handle array values - find the array variant and expand items
+          if value.is_a?(Array)
+            # Find a variant that has _items (indicating it's an array variant)
+            array_variant = variants.find do |variant|
+              next if variant.nil? || variant.empty?
+              variant[:_items] || variant["_items"]
+            end
+
+            if array_variant
+              items_map = array_variant[:_items] || array_variant["_items"]
+              return expand_array_with_nested_map(value, items_map, defs, symbolize: symbolize)
+            end
+
+            return value
+          end
+
           return value unless value.is_a?(Hash)
 
           # Find the matching variant by detecting which keys are present
           matching_variant = variants.find do |variant|
             next if variant.nil? || variant.empty?
-            variant.keys.any? { |k| value.key?(k) || value.key?(k.to_s) }
+            # Skip array variants when looking for object matches
+            next if variant[:_items] || variant["_items"]
+            variant.keys.any? { |k| !k.to_s.start_with?("_") && (value.key?(k) || value.key?(k.to_s)) }
           end
 
           if matching_variant
             expand_hash(value, matching_variant, defs, symbolize: symbolize)
           else
             value
+          end
+        end
+
+        def expand_array_with_nested_map(array, items_map, defs, symbolize:)
+          return array unless array.is_a?(Array)
+
+          # items_map could be a direct field mapping or contain nested _variants/_items
+          array.map do |item|
+            if item.is_a?(Hash)
+              if items_map[:_variants] || items_map["_variants"]
+                # Nested anyOf/oneOf inside array items
+                variants = items_map[:_variants] || items_map["_variants"]
+                expand_with_variants(item, variants, defs, symbolize: symbolize)
+              else
+                # Direct field mapping
+                expand_hash(item, items_map, defs, symbolize: symbolize)
+              end
+            else
+              item
+            end
           end
         end
       end
